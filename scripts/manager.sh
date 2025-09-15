@@ -1,197 +1,327 @@
 #!/bin/bash
-# Wyoming Satellite Manager - Master Control Script
-# Run with: bash satellite-manager.sh
+# Wyoming Satellite Service Manager
+# Interactive management for multiple Wyoming satellite services
 
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-USER_HOME=$(eval echo "~$(whoami)")
+# Get current user info
+CURRENT_USER=$(whoami)
+USER_HOME=$(eval echo "~$CURRENT_USER")
 CONFIG_DIR="$USER_HOME/wyoming-configs"
 
-echo "==========================================="
-echo "Wyoming Satellite Manager"
-echo "==========================================="
-echo ""
-echo "Available actions:"
-echo "1) Install dependencies (first time setup)"
-echo "2) Create/modify configuration"
-echo "3) Deploy configuration to services"
-echo "4) List configurations"
-echo "5) Show current service status"
-echo "6) View configuration details"
-echo "7) Remove configuration"
-echo "8) Service management (start/stop/restart)"
-echo ""
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
 
-read -p "Choose action [1-8]: " ACTION
+# Function to get service status with color
+get_service_status() {
+    local service_name=$1
+    if systemctl is-active --quiet "$service_name" 2>/dev/null; then
+        echo -e "${GREEN}ACTIVE${NC}"
+    elif systemctl is-enabled --quiet "$service_name" 2>/dev/null; then
+        if systemctl is-failed --quiet "$service_name" 2>/dev/null; then
+            echo -e "${RED}FAILED${NC}"
+        else
+            echo -e "${YELLOW}STOPPED${NC}"
+        fi
+    else
+        echo -e "${RED}DISABLED${NC}"
+    fi
+}
 
-case $ACTION in
-    1)
-        echo ""
-        echo "=== Installing Dependencies ==="
-        bash "$SCRIPT_DIR/satellite-install.sh"
-        ;;
-    2)
-        echo ""
-        echo "=== Configuration Management ==="
-        read -p "Enter configuration name (or press Enter to see list): " CONFIG_NAME
-        bash "$SCRIPT_DIR/satellite-config.sh" "$CONFIG_NAME"
-        ;;
-    3)
-        echo ""
-        echo "=== Service Deployment ==="
-        read -p "Enter configuration name to deploy (or press Enter to see list): " CONFIG_NAME
-        bash "$SCRIPT_DIR/satellite-run.sh" "$CONFIG_NAME"
-        ;;
-    4)
-        echo ""
-        echo "=== Available Configurations ==="
-        if [ -d "$CONFIG_DIR" ]; then
-            ls -1 "$CONFIG_DIR"/*.json 2>/dev/null | while read -r config_file; do
-                if [ -f "$config_file" ]; then
-                    config_name=$(basename "$config_file" .json)
-                    satellite_name=$(jq -r '.satellite_name // "unknown"' "$config_file")
-                    created_date=$(jq -r '.metadata.created_date // "unknown"' "$config_file")
-                    echo "  $config_name"
-                    echo "    Satellite: $satellite_name"
-                    echo "    Created: $created_date"
-                    echo ""
-                fi
-            done || echo "  (no configurations found)"
-        else
-            echo "  (no configurations found)"
+# Function to get configuration info
+get_config_info() {
+    local config_name=$1
+    local config_file="$CONFIG_DIR/${config_name}.json"
+    
+    if [ -f "$config_file" ]; then
+        local wake_word=$(jq -r '.wake_word // "unknown"' "$config_file" 2>/dev/null)
+        local sat_port=$(jq -r '.assigned_ports.satellite // "unknown"' "$config_file" 2>/dev/null)
+        local wake_port=$(jq -r '.assigned_ports.wakeword // "unknown"' "$config_file" 2>/dev/null)
+        echo "$wake_word @ $sat_port/$wake_port"
+    else
+        echo "config missing"
+    fi
+}
+
+# Function to discover Wyoming satellite services
+discover_satellites() {
+    local satellites=()
+    local config_names=()
+    
+    # Find all wyoming-satellite-* services
+    for service_file in /etc/systemd/system/wyoming-satellite-*.service; do
+        if [ -f "$service_file" ]; then
+            local service_name=$(basename "$service_file" .service)
+            local config_name=${service_name#wyoming-satellite-}
+            satellites+=("$service_name")
+            config_names+=("$config_name")
         fi
-        ;;
-    5)
+    done
+    
+    echo "${#satellites[@]}"
+    printf '%s\n' "${satellites[@]}"
+    printf '%s\n' "${config_names[@]}"
+}
+
+# Function to display satellite list
+display_satellites() {
+    echo ""
+    echo -e "${BLUE}Wyoming Satellite Manager${NC}"
+    echo "========================"
+    echo ""
+    
+    # Get satellite info
+    local discovery_output=$(discover_satellites)
+    local lines=($discovery_output)
+    local count=${lines[0]}
+    
+    if [ "$count" -eq 0 ]; then
+        echo "No Wyoming satellite services found."
         echo ""
-        echo "=== Current Service Status ==="
-        if systemctl list-unit-files | grep -q wyoming-; then
-            echo "Service Status:"
-            systemctl is-active wyoming-openwakeword 2>/dev/null && \
-                echo "  ✓ wyoming-openwakeword: $(systemctl is-active wyoming-openwakeword)" || \
-                echo "  ✗ wyoming-openwakeword: $(systemctl is-active wyoming-openwakeword 2>/dev/null || echo 'not found')"
-            systemctl is-active wyoming-satellite 2>/dev/null && \
-                echo "  ✓ wyoming-satellite: $(systemctl is-active wyoming-satellite)" || \
-                echo "  ✗ wyoming-satellite: $(systemctl is-active wyoming-satellite 2>/dev/null || echo 'not found')"
-            
-            if [ -f "$USER_HOME/.wyoming-satellite/current-config.json" ]; then
-                echo ""
-                echo "Active Configuration:"
-                current_config=$(jq -r '.config_name // "unknown"' "$USER_HOME/.wyoming-satellite/current-config.json")
-                satellite_name=$(jq -r '.satellite_name // "unknown"' "$USER_HOME/.wyoming-satellite/current-config.json")
-                echo "  Config: $current_config"
-                echo "  Satellite: $satellite_name"
-            fi
-        else
-            echo "  No Wyoming services found"
-        fi
-        ;;
-    6)
-        echo ""
-        echo "=== Configuration Details ==="
-        if [ -d "$CONFIG_DIR" ]; then
-            echo "Available configurations:"
-            ls -1 "$CONFIG_DIR"/*.json 2>/dev/null | xargs -n1 basename -s .json | sed 's/^/  /' || echo "  (none)"
-            echo ""
-        fi
-        read -p "Enter configuration name to view: " VIEW_CONFIG
-        if [ -n "$VIEW_CONFIG" ] && [ -f "$CONFIG_DIR/${VIEW_CONFIG}.json" ]; then
-            echo ""
-            echo "Configuration: $VIEW_CONFIG"
-            echo "============================================"
-            jq -r '
-                "Satellite Name: " + (.satellite_name // "unknown") + "\n" +
-                "Wake Word: " + (.wake_word // "unknown") + "\n" +
-                "Audio Device (Mic): " + (.audio.mic_device // "unknown") + " @ " + (.audio.mic_rate // "unknown") + "Hz\n" +
-                "Audio Device (Speaker): " + (.audio.speaker_device // "unknown") + " @ " + (.audio.speaker_rate // "unknown") + "Hz\n" +
-                "Wake Sound: " + (.sounds.wake_sound // "none") + "\n" +
-                "Done Sound: " + (.sounds.done_sound // "none") + "\n" +
-                "Created: " + (.metadata.created_date // "unknown") + "\n" +
-                "Updated: " + (.metadata.updated_date // "unknown")
-            ' "$CONFIG_DIR/${VIEW_CONFIG}.json"
-        else
-            echo "Configuration not found: $VIEW_CONFIG"
-        fi
-        ;;
-    7)
-        echo ""
-        echo "=== Remove Configuration ==="
-        if [ -d "$CONFIG_DIR" ]; then
-            echo "Available configurations:"
-            ls -1 "$CONFIG_DIR"/*.json 2>/dev/null | xargs -n1 basename -s .json | sed 's/^/  /' || echo "  (none)"
-            echo ""
-        fi
-        read -p "Enter configuration name to remove: " REMOVE_CONFIG
-        if [ -n "$REMOVE_CONFIG" ] && [ -f "$CONFIG_DIR/${REMOVE_CONFIG}.json" ]; then
-            echo "Configuration to remove: $REMOVE_CONFIG"
-            jq -r '"Satellite: " + (.satellite_name // "unknown")' "$CONFIG_DIR/${REMOVE_CONFIG}.json"
-            echo ""
-            read -p "Are you sure you want to remove this configuration? [y/N]: " CONFIRM_REMOVE
-            if [[ $CONFIRM_REMOVE =~ ^[Yy]$ ]]; then
-                # Remove config file
-                rm "$CONFIG_DIR/${REMOVE_CONFIG}.json"
-                
-                # Remove associated sound files
-                rm -f "$USER_HOME/sounds/${REMOVE_CONFIG}_awake.wav"
-                rm -f "$USER_HOME/sounds/${REMOVE_CONFIG}_done.wav"
-                
-                echo "Configuration '$REMOVE_CONFIG' removed."
-                
-                # Check if this was the active configuration
-                if [ -f "$USER_HOME/.wyoming-satellite/current-config.json" ]; then
-                    current_config=$(jq -r '.config_name // "unknown"' "$USER_HOME/.wyoming-satellite/current-config.json" 2>/dev/null || echo "unknown")
-                    if [ "$current_config" = "$REMOVE_CONFIG" ]; then
-                        echo "Warning: This was the active configuration. Services may need to be reconfigured."
-                    fi
-                fi
-            else
-                echo "Removal cancelled."
-            fi
-        else
-            echo "Configuration not found: $REMOVE_CONFIG"
-        fi
-        ;;
-    8)
-        echo ""
-        echo "=== Service Management ==="
-        echo "1) Start services"
-        echo "2) Stop services"
-        echo "3) Restart services"
-        echo "4) View service logs"
-        echo ""
-        read -p "Choose service action [1-4]: " SERVICE_ACTION
+        echo "Use 'bash svc.sh [config_name]' to deploy a satellite service."
+        return 1
+    fi
+    
+    echo "Deployed Satellites:"
+    
+    # Parse discovery output
+    local satellites=()
+    local config_names=()
+    for ((i=1; i<=count; i++)); do
+        satellites+=("${lines[$i]}")
+    done
+    for ((i=count+1; i<=2*count; i++)); do
+        config_names+=("${lines[$i]}")
+    done
+    
+    # Display each satellite
+    for ((i=0; i<count; i++)); do
+        local satellite_service="${satellites[$i]}"
+        local wakeword_service="wyoming-openwakeword-${config_names[$i]}"
+        local config_name="${config_names[$i]}"
         
-        case $SERVICE_ACTION in
-            1)
-                echo "Starting Wyoming services..."
-                sudo systemctl start wyoming-openwakeword wyoming-satellite
-                echo "Services started."
-                ;;
-            2)
-                echo "Stopping Wyoming services..."
-                sudo systemctl stop wyoming-satellite wyoming-openwakeword
-                echo "Services stopped."
-                ;;
-            3)
-                echo "Restarting Wyoming services..."
-                sudo systemctl restart wyoming-openwakeword wyoming-satellite
-                echo "Services restarted."
-                ;;
-            4)
-                echo "Service logs (press Ctrl+C to exit):"
-                echo ""
-                journalctl -u wyoming-satellite -u wyoming-openwakeword -f
-                ;;
-            *)
-                echo "Invalid service action."
-                ;;
-        esac
-        ;;
-    *)
-        echo "Invalid action."
-        exit 1
-        ;;
-esac
+        local sat_status=$(get_service_status "$satellite_service")
+        local wake_status=$(get_service_status "$wakeword_service")
+        local config_info=$(get_config_info "$config_name")
+        
+        # Determine overall status
+        local overall_status
+        if [[ "$sat_status" == *"ACTIVE"* ]] && [[ "$wake_status" == *"ACTIVE"* ]]; then
+            overall_status="${GREEN}ACTIVE${NC}"
+        elif [[ "$sat_status" == *"FAILED"* ]] || [[ "$wake_status" == *"FAILED"* ]]; then
+            overall_status="${RED}FAILED${NC}"
+        else
+            overall_status="${YELLOW}STOPPED${NC}"
+        fi
+        
+        printf "  %d) %-12s [%b] - %s\n" $((i+1)) "$config_name" "$overall_status" "$config_info"
+    done
+    
+    echo ""
+    return 0
+}
 
-echo ""
-echo "Action completed."
+# Function to show service actions menu
+show_actions_menu() {
+    local config_name=$1
+    local satellite_service="wyoming-satellite-${config_name}"
+    local wakeword_service="wyoming-openwakeword-${config_name}"
+    
+    echo ""
+    echo -e "${BLUE}Selected: $config_name${NC}"
+    echo "Services: $satellite_service, $wakeword_service"
+    echo ""
+    
+    # Show current status
+    local sat_status=$(get_service_status "$satellite_service")
+    local wake_status=$(get_service_status "$wakeword_service")
+    echo "Current Status:"
+    echo "  Satellite:  $sat_status"
+    echo "  Wake Word:  $wake_status"
+    echo ""
+    
+    echo "Actions:"
+    echo "  s) Start services"
+    echo "  t) Stop services"
+    echo "  r) Restart services"
+    echo "  e) Enable (auto-start)"
+    echo "  d) Disable (no auto-start)"
+    echo "  u) Uninstall services"
+    echo "  v) View configuration"
+    echo "  l) View logs"
+    echo "  q) Back to main menu"
+    echo ""
+}
+
+# Function to execute service action
+execute_action() {
+    local action=$1
+    local config_name=$2
+    local satellite_service="wyoming-satellite-${config_name}"
+    local wakeword_service="wyoming-openwakeword-${config_name}"
+    
+    case $action in
+        s)
+            echo "Starting services..."
+            sudo systemctl start "$wakeword_service" "$satellite_service"
+            echo "Services started."
+            ;;
+        t)
+            echo "Stopping services..."
+            sudo systemctl stop "$satellite_service" "$wakeword_service"
+            echo "Services stopped."
+            ;;
+        r)
+            echo "Restarting services..."
+            sudo systemctl restart "$wakeword_service"
+            sleep 2
+            sudo systemctl restart "$satellite_service"
+            echo "Services restarted."
+            ;;
+        e)
+            echo "Enabling services..."
+            sudo systemctl enable "$wakeword_service" "$satellite_service"
+            echo "Services enabled for auto-start."
+            ;;
+        d)
+            echo "Disabling services..."
+            sudo systemctl disable "$satellite_service" "$wakeword_service"
+            echo "Services disabled from auto-start."
+            ;;
+        u)
+            echo ""
+            echo -e "${RED}WARNING: This will permanently remove the services!${NC}"
+            read -p "Are you sure you want to uninstall '$config_name' services? [y/N]: " CONFIRM
+            if [[ $CONFIRM =~ ^[Yy]$ ]]; then
+                echo "Uninstalling services..."
+                sudo systemctl stop "$satellite_service" "$wakeword_service" 2>/dev/null || true
+                sudo systemctl disable "$satellite_service" "$wakeword_service" 2>/dev/null || true
+                sudo rm -f "/etc/systemd/system/${satellite_service}.service"
+                sudo rm -f "/etc/systemd/system/${wakeword_service}.service"
+                sudo systemctl daemon-reload
+                echo "Services uninstalled successfully."
+                echo ""
+                echo "Note: Configuration file preserved at: $CONFIG_DIR/${config_name}.json"
+            else
+                echo "Uninstall cancelled."
+            fi
+            ;;
+        v)
+            local config_file="$CONFIG_DIR/${config_name}.json"
+            if [ -f "$config_file" ]; then
+                echo ""
+                echo -e "${BLUE}Configuration: $config_name${NC}"
+                echo "File: $config_file"
+                echo ""
+                jq '.' "$config_file" 2>/dev/null || {
+                    echo "Error reading configuration file"
+                    cat "$config_file"
+                }
+            else
+                echo "Configuration file not found: $config_file"
+            fi
+            echo ""
+            read -p "Press Enter to continue..."
+            ;;
+        l)
+            echo ""
+            echo "Showing logs for $satellite_service (Ctrl+C to exit)..."
+            echo ""
+            journalctl -u "$satellite_service" -f
+            ;;
+        q)
+            return 0
+            ;;
+        *)
+            echo "Invalid action: $action"
+            ;;
+    esac
+    
+    # Show updated status after action (except for logs and quit)
+    if [[ "$action" != "l" && "$action" != "q" && "$action" != "v" ]]; then
+        echo ""
+        echo "Updated Status:"
+        local sat_status=$(get_service_status "$satellite_service")
+        local wake_status=$(get_service_status "$wakeword_service")
+        echo "  Satellite:  $sat_status"
+        echo "  Wake Word:  $wake_status"
+        echo ""
+        read -p "Press Enter to continue..."
+    fi
+}
+
+# Main program loop
+main() {
+    while true; do
+        clear
+        
+        if ! display_satellites; then
+            echo ""
+            read -p "Press Enter to exit..."
+            exit 0
+        fi
+        
+        # Get satellite info for selection
+        local discovery_output=$(discover_satellites)
+        local lines=($discovery_output)
+        local count=${lines[0]}
+        
+        # Parse config names
+        local config_names=()
+        for ((i=count+1; i<=2*count; i++)); do
+            config_names+=("${lines[$i]}")
+        done
+        
+        echo "Select satellite [1-$count] or 'q' to quit:"
+        read -p "> " SELECTION
+        
+        if [[ "$SELECTION" == "q" || "$SELECTION" == "Q" ]]; then
+            echo "Goodbye!"
+            exit 0
+        fi
+        
+        if [[ "$SELECTION" =~ ^[0-9]+$ ]] && [ "$SELECTION" -ge 1 ] && [ "$SELECTION" -le "$count" ]; then
+            local selected_config="${config_names[$((SELECTION-1))]}"
+            
+            # Service management loop
+            while true; do
+                clear
+                show_actions_menu "$selected_config"
+                
+                read -p "Choose action: " ACTION
+                
+                if [ "$ACTION" = "q" ]; then
+                    break
+                fi
+                
+                execute_action "$ACTION" "$selected_config"
+            done
+        else
+            echo "Invalid selection: $SELECTION"
+            sleep 2
+        fi
+    done
+}
+
+# Check if running as root
+if [ "$EUID" -eq 0 ]; then
+    echo "Please run this script as a regular user (not root)."
+    echo "The script will use sudo when needed."
+    exit 1
+fi
+
+# Check for required commands
+for cmd in systemctl jq; do
+    if ! command -v "$cmd" &> /dev/null; then
+        echo "Error: Required command '$cmd' not found."
+        echo "Please install the required packages and try again."
+        exit 1
+    fi
+done
+
+# Run main program
+main
