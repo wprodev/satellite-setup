@@ -230,10 +230,19 @@ if [ "$NEW_CONFIG" = false ]; then
     WAKE_SOUND_PATH=$(jq -r '.sounds.wake_sound // ""' "$CONFIG_FILE")
     DONE_SOUND_PATH=$(jq -r '.sounds.done_sound // ""' "$CONFIG_FILE")
     
+    # Remote wake word service configuration
+    WAKE_SERVICE_TYPE=$(jq -r '.services.wake_service_type // "local"' "$CONFIG_FILE")
+    REMOTE_WAKE_HOST=$(jq -r '.services.remote_wake_host // ""' "$CONFIG_FILE")
+    REMOTE_WAKE_PORT=$(jq -r '.services.remote_wake_port // "10400"' "$CONFIG_FILE")
+    
     echo "Current configuration:"
     echo "  Satellite: $SATELLITE_NAME"
     echo "  Wake Word: $WAKE_WORD"
     echo "  Audio: $MIC_DEVICE @ ${MIC_RATE}Hz / $SPEAKER_DEVICE @ ${SPEAKER_RATE}Hz"
+    echo "  Wake Service: $WAKE_SERVICE_TYPE"
+    if [ "$WAKE_SERVICE_TYPE" = "remote" ]; then
+        echo "  Remote Wake: $REMOTE_WAKE_HOST:$REMOTE_WAKE_PORT"
+    fi
     echo ""
     
     read -p "Do you want to modify this configuration? [y/N]: " MODIFY_CONFIG
@@ -254,6 +263,11 @@ else
     DEBUG_MODE=false
     WAKE_SOUND_PATH=""
     DONE_SOUND_PATH=""
+    
+    # Remote wake word service defaults
+    WAKE_SERVICE_TYPE="local"
+    REMOTE_WAKE_HOST=""
+    REMOTE_WAKE_PORT="10400"
 fi
 
 # Basic configuration
@@ -395,6 +409,60 @@ if [ -n "$MIC_DEVICE" ] && [ -n "$SPEAKER_DEVICE" ]; then
             esac
         done
     fi
+fi
+
+# Remote Services Configuration
+echo ""
+echo "=== Remote Services Configuration ==="
+echo "Wake word service type:"
+echo "  local  - Use local Wyoming OpenWakeWord service (default)"
+echo "  remote - Connect to remote Wyoming OpenWakeWord service"
+echo ""
+if [ "$WAKE_SERVICE_TYPE" = "remote" ]; then
+    WAKE_TYPE_DISPLAY="remote"
+else
+    WAKE_TYPE_DISPLAY="local"
+fi
+read -p "Wake service type [$WAKE_TYPE_DISPLAY] (local/remote): " NEW_WAKE_SERVICE_TYPE
+case "$NEW_WAKE_SERVICE_TYPE" in
+    remote)
+        WAKE_SERVICE_TYPE="remote"
+        ;;
+    local)
+        WAKE_SERVICE_TYPE="local"
+        ;;
+    "")
+        # Keep current setting
+        ;;
+    *)
+        echo "Invalid input. Keeping current setting: $WAKE_SERVICE_TYPE"
+        ;;
+esac
+
+if [ "$WAKE_SERVICE_TYPE" = "remote" ]; then
+    echo ""
+    echo "Remote wake word service configuration:"
+    read -p "Remote wake word host [$REMOTE_WAKE_HOST]: " NEW_REMOTE_WAKE_HOST
+    REMOTE_WAKE_HOST=${NEW_REMOTE_WAKE_HOST:-$REMOTE_WAKE_HOST}
+    
+    read -p "Remote wake word port [$REMOTE_WAKE_PORT]: " NEW_REMOTE_WAKE_PORT
+    REMOTE_WAKE_PORT=${NEW_REMOTE_WAKE_PORT:-$REMOTE_WAKE_PORT}
+    
+    # Test connection to remote wake word service
+    echo ""
+    read -p "Test connection to remote wake word service? [y/N]: " TEST_REMOTE_WAKE
+    if [[ $TEST_REMOTE_WAKE =~ ^[Yy]$ ]]; then
+        echo "Testing connection to $REMOTE_WAKE_HOST:$REMOTE_WAKE_PORT..."
+        if timeout 5 bash -c "</dev/tcp/$REMOTE_WAKE_HOST/$REMOTE_WAKE_PORT" 2>/dev/null; then
+            echo "✓ Connection successful!"
+        else
+            echo "✗ Connection failed. Please check host and port."
+            echo "  Make sure your Wyoming OpenWakeWord service is running on $REMOTE_WAKE_HOST:$REMOTE_WAKE_PORT"
+        fi
+    fi
+else
+    echo ""
+    echo "Using local wake word service (will be deployed with satellite)"
 fi
 
 # Sound configuration
@@ -598,6 +666,11 @@ cat > "$CONFIG_FILE" << EOF_JSON
     "mic_auto_gain": "$MIC_AUTO_GAIN",
     "mic_noise_suppression": "$MIC_NOISE_SUPPRESSION"
   },
+  "services": {
+    "wake_service_type": "$WAKE_SERVICE_TYPE",
+    "remote_wake_host": "$REMOTE_WAKE_HOST",
+    "remote_wake_port": "$REMOTE_WAKE_PORT"
+  },
   "debug_mode": $DEBUG_MODE,
   "sounds": {
     "wake_sound": "$WAKE_SOUND_PATH",
@@ -635,8 +708,12 @@ if [ -n "$MIC_NOISE_SUPPRESSION" ]; then
 else
     echo "  Noise Suppression: disabled"
 fi
+echo "  Wake Service: $WAKE_SERVICE_TYPE"
+if [ "$WAKE_SERVICE_TYPE" = "remote" ]; then
+    echo "  Remote Wake: $REMOTE_WAKE_HOST:$REMOTE_WAKE_PORT"
+fi
 echo "  Debug Mode: $DEBUG_MODE"
 echo "  Wake Sound: ${WAKE_SOUND_PATH:-none}"
 echo "  Done Sound: ${DONE_SOUND_PATH:-none}"
 echo ""
-echo "Next: Run 'bash satellite-run.sh $CONFIG_NAME' to deploy this configuration"
+echo "Next: Run 'bash svc.sh $CONFIG_NAME' to deploy this configuration"

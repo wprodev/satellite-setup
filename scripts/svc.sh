@@ -52,6 +52,11 @@ DEBUG_MODE=$(jq -r '.debug_mode // false' "$CONFIG_FILE")
 WAKE_SOUND_PATH=$(jq -r '.sounds.wake_sound // ""' "$CONFIG_FILE")
 DONE_SOUND_PATH=$(jq -r '.sounds.done_sound // ""' "$CONFIG_FILE")
 
+# Remote services configuration
+WAKE_SERVICE_TYPE=$(jq -r '.services.wake_service_type // "local"' "$CONFIG_FILE")
+REMOTE_WAKE_HOST=$(jq -r '.services.remote_wake_host // ""' "$CONFIG_FILE")
+REMOTE_WAKE_PORT=$(jq -r '.services.remote_wake_port // "10400"' "$CONFIG_FILE")
+
 echo "Loaded configuration:"
 echo "  Satellite Name: $SATELLITE_NAME"
 echo "  Wake Word: $WAKE_WORD"
@@ -66,6 +71,10 @@ if [ -n "$MIC_NOISE_SUPPRESSION" ]; then
     echo "  Noise Suppression: ${MIC_NOISE_SUPPRESSION}"
 else
     echo "  Noise Suppression: disabled"
+fi
+echo "  Wake Service: $WAKE_SERVICE_TYPE"
+if [ "$WAKE_SERVICE_TYPE" = "remote" ]; then
+    echo "  Remote Wake: $REMOTE_WAKE_HOST:$REMOTE_WAKE_PORT"
 fi
 echo "  Debug Mode: $DEBUG_MODE"
 echo "  Wake Sound: ${WAKE_SOUND_PATH:-none}"
@@ -195,13 +204,36 @@ jq --arg sat_port "$SATELLITE_PORT" --arg wake_port "$WAKEWORD_PORT" \
 
 echo "Configuration updated with assigned ports."
 
+# Determine wake word service URI
+if [ "$WAKE_SERVICE_TYPE" = "remote" ]; then
+    WAKE_URI="tcp://$REMOTE_WAKE_HOST:$REMOTE_WAKE_PORT"
+    echo "Using remote wake word service: $WAKE_URI"
+    
+    # Test connection to remote wake word service
+    echo "Testing connection to remote wake word service..."
+    if timeout 5 bash -c "</dev/tcp/$REMOTE_WAKE_HOST/$REMOTE_WAKE_PORT" 2>/dev/null; then
+        echo "✓ Connection to remote wake word service successful!"
+    else
+        echo "✗ Warning: Cannot connect to remote wake word service at $REMOTE_WAKE_HOST:$REMOTE_WAKE_PORT"
+        echo "  Make sure your Wyoming OpenWakeWord service is running on the remote server."
+        read -p "Continue anyway? [y/N]: " CONTINUE_ANYWAY
+        if [[ ! $CONTINUE_ANYWAY =~ ^[Yy]$ ]]; then
+            echo "Deployment cancelled."
+            exit 1
+        fi
+    fi
+else
+    WAKE_URI="tcp://127.0.0.1:$WAKEWORD_PORT"
+    echo "Using local wake word service: $WAKE_URI"
+fi
+
 # Build Wyoming Satellite command with fixed escaping
 SATELLITE_CMD="$USER_HOME/wyoming-satellite/script/run \\
     --name '$SATELLITE_NAME' \\
     --uri 'tcp://0.0.0.0:$SATELLITE_PORT' \\
     --mic-command 'arecord -D $MIC_DEVICE -r $MIC_RATE -c 1 -f S16_LE -t raw' \\
     --snd-command 'aplay -D $SPEAKER_DEVICE -r $SPEAKER_RATE -c 1 -f S16_LE -t raw' \\
-    --wake-uri 'tcp://127.0.0.1:$WAKEWORD_PORT' \\
+    --wake-uri '$WAKE_URI' \\
     --wake-word-name '$WAKE_WORD'"
 
 # Add advanced audio options if configured
@@ -238,8 +270,10 @@ SATELLITE_CMD="$SATELLITE_CMD \\
 
 echo "Creating systemd services..."
 
-# Create OpenWakeWord service with unique name
-sudo tee "/etc/systemd/system/${WAKEWORD_SERVICE}.service" > /dev/null <<EOF_SERVICE
+# Create services based on wake word service type
+if [ "$WAKE_SERVICE_TYPE" = "local" ]; then
+    # Create OpenWakeWord service with unique name
+    sudo tee "/etc/systemd/system/${WAKEWORD_SERVICE}.service" > /dev/null <<EOF_SERVICE
 [Unit]
 Description=Wyoming OpenWakeWord ($CONFIG_NAME)
 After=network-online.target
@@ -262,8 +296,8 @@ Environment=CONFIG_FILE=$CONFIG_FILE
 WantedBy=default.target
 EOF_SERVICE
 
-# Create Wyoming Satellite service with unique name
-sudo tee "/etc/systemd/system/${SATELLITE_SERVICE}.service" > /dev/null <<EOF_SERVICE
+    # Create Wyoming Satellite service with local wake word dependency
+    sudo tee "/etc/systemd/system/${SATELLITE_SERVICE}.service" > /dev/null <<EOF_SERVICE
 [Unit]
 Description=Wyoming Satellite ($CONFIG_NAME)
 After=network-online.target ${WAKEWORD_SERVICE}.service
@@ -284,16 +318,47 @@ Environment=CONFIG_FILE=$CONFIG_FILE
 WantedBy=default.target
 EOF_SERVICE
 
+    echo "Created local wake word and satellite services."
+    SERVICES_TO_ENABLE="$WAKEWORD_SERVICE $SATELLITE_SERVICE"
+    SERVICES_TO_START="$WAKEWORD_SERVICE $SATELLITE_SERVICE"
+    SERVICES_TO_VALIDATE="$WAKEWORD_SERVICE $SATELLITE_SERVICE"
+else
+    # Create Wyoming Satellite service without local wake word dependency
+    sudo tee "/etc/systemd/system/${SATELLITE_SERVICE}.service" > /dev/null <<EOF_SERVICE
+[Unit]
+Description=Wyoming Satellite ($CONFIG_NAME)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=$SATELLITE_CMD
+WorkingDirectory=$USER_HOME/wyoming-satellite
+Restart=always
+RestartSec=10
+User=$CURRENT_USER
+Environment=CONFIG_NAME=$CONFIG_NAME
+Environment=CONFIG_FILE=$CONFIG_FILE
+
+[Install]
+WantedBy=default.target
+EOF_SERVICE
+
+    echo "Created satellite service for remote wake word."
+    SERVICES_TO_ENABLE="$SATELLITE_SERVICE"
+    SERVICES_TO_START="$SATELLITE_SERVICE"
+    SERVICES_TO_VALIDATE="$SATELLITE_SERVICE"
+fi
+
 echo "Services created successfully."
 
 # Validate service files
 echo "Validating service files..."
-if ! systemd-analyze verify "/etc/systemd/system/${WAKEWORD_SERVICE}.service" 2>/dev/null; then
-    echo "Warning: Wake word service file may have issues"
-fi
-if ! systemd-analyze verify "/etc/systemd/system/${SATELLITE_SERVICE}.service" 2>/dev/null; then
-    echo "Warning: Satellite service file may have issues"
-fi
+for service in $SERVICES_TO_VALIDATE; do
+    if ! systemd-analyze verify "/etc/systemd/system/${service}.service" 2>/dev/null; then
+        echo "Warning: $service service file may have issues"
+    fi
+done
 
 # Set proper ownership for sound files
 if [ -n "$WAKE_SOUND_PATH" ] && [ -f "$WAKE_SOUND_PATH" ]; then
@@ -306,8 +371,9 @@ fi
 # Reload systemd and enable services
 echo "Enabling services..."
 sudo systemctl daemon-reload
-sudo systemctl enable "${WAKEWORD_SERVICE}.service"
-sudo systemctl enable "${SATELLITE_SERVICE}.service"
+for service in $SERVICES_TO_ENABLE; do
+    sudo systemctl enable "${service}.service"
+done
 
 echo ""
 echo "==========================================="
@@ -315,14 +381,20 @@ echo "Deployment Complete!"
 echo "==========================================="
 echo ""
 echo "Configuration: $CONFIG_NAME"
-echo "Services: $WAKEWORD_SERVICE, $SATELLITE_SERVICE"
-echo "Ports: Satellite=$SATELLITE_PORT, Wake Word=$WAKEWORD_PORT"
+if [ "$WAKE_SERVICE_TYPE" = "local" ]; then
+    echo "Services: $WAKEWORD_SERVICE, $SATELLITE_SERVICE"
+    echo "Ports: Satellite=$SATELLITE_PORT, Wake Word=$WAKEWORD_PORT"
+else
+    echo "Services: $SATELLITE_SERVICE"
+    echo "Ports: Satellite=$SATELLITE_PORT"
+    echo "Remote Wake: $REMOTE_WAKE_HOST:$REMOTE_WAKE_PORT"
+fi
 echo "Config file: $CONFIG_FILE"
 echo ""
 echo "Management commands:"
-echo "  Start:   sudo systemctl start $WAKEWORD_SERVICE $SATELLITE_SERVICE"
-echo "  Stop:    sudo systemctl stop $SATELLITE_SERVICE $WAKEWORD_SERVICE"
-echo "  Status:  sudo systemctl status $SATELLITE_SERVICE $WAKEWORD_SERVICE"
+echo "  Start:   sudo systemctl start $SERVICES_TO_START"
+echo "  Stop:    sudo systemctl stop $SERVICES_TO_START"
+echo "  Status:  sudo systemctl status $SERVICES_TO_START"
 echo "  Logs:    journalctl -u $SATELLITE_SERVICE -f"
 echo ""
 echo "Use 'bash manager.sh' for interactive service management"
@@ -331,14 +403,22 @@ echo ""
 read -p "Start services now? [y/N]: " START_NOW
 if [[ $START_NOW =~ ^[Yy]$ ]]; then
     echo "Starting services..."
-    sudo systemctl start "$WAKEWORD_SERVICE"
-    sleep 2
-    sudo systemctl start "$SATELLITE_SERVICE"
+    for service in $SERVICES_TO_START; do
+        sudo systemctl start "$service"
+        if [ "$service" = "$WAKEWORD_SERVICE" ]; then
+            sleep 2  # Wait for wake word service to be ready
+        fi
+    done
     
     echo ""
     echo "Service status:"
-    sudo systemctl is-active "$WAKEWORD_SERVICE" && echo "  ✓ $WAKEWORD_SERVICE: active" || echo "  ✗ $WAKEWORD_SERVICE: failed"
-    sudo systemctl is-active "$SATELLITE_SERVICE" && echo "  ✓ $SATELLITE_SERVICE: active" || echo "  ✗ $SATELLITE_SERVICE: failed"
+    for service in $SERVICES_TO_START; do
+        if sudo systemctl is-active "$service" >/dev/null 2>&1; then
+            echo "  ✓ $service: active"
+        else
+            echo "  ✗ $service: failed"
+        fi
+    done
     
     echo ""
     echo "Monitor logs with: journalctl -u $SATELLITE_SERVICE -f"
