@@ -17,12 +17,12 @@ echo ""
 
 # Update system
 echo "Updating system packages..."
-sudo apt-get update
-sudo apt-get upgrade -y
+sudo apt update -qq
+sudo apt upgrade -qqy
 
 # Install dependencies
 echo "Installing dependencies..."
-sudo apt-get install -y \
+sudo apt install -y \
     python3-dev \
     python3-venv \
     python3-pip \
@@ -50,7 +50,7 @@ rm -rf "$USER_HOME/satellite-setup/.git"
 echo "Setting up Wyoming Satellite..."
 rm -rf "$USER_HOME/wyoming-satellite"
 mkdir -p "$USER_HOME/wyoming-satellite"
-cp -R "$USER_HOME/satellite-setup/wyoming-satellite" "$USER_HOME/wyoming-satellite"
+cp -R "$USER_HOME/satellite-setup/wyoming-satellite" "$USER_HOME/"
 cd "$USER_HOME/wyoming-satellite"
 echo "Running Wyoming Satellite setup script..."
 script/setup
@@ -59,7 +59,7 @@ script/setup
 echo "Setting up Wyoming OpenWakeWord..."
 rm -rf "$USER_HOME/wyoming-openwakeword"
 mkdir -p "$USER_HOME/wyoming-openwakeword"
-cp -R "$USER_HOME/satellite-setup/wyoming-openwakeword" "$USER_HOME/wyoming-openwakeword"
+cp -R "$USER_HOME/satellite-setup/wyoming-openwakeword" "$USER_HOME/"
 cd "$USER_HOME/wyoming-openwakeword"
 echo "Running Wyoming OpenWakeWord setup script..."
 script/setup
