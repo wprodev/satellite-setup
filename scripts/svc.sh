@@ -231,7 +231,7 @@ fi
 SATELLITE_CMD="$USER_HOME/wyoming-satellite/script/run \\
     --name '$SATELLITE_NAME' \\
     --uri 'tcp://0.0.0.0:$SATELLITE_PORT' \\
-    --mic-command 'arecord -D $MIC_DEVICE -r $MIC_RATE -c 1 -f S16_LE -t raw' \\
+    --mic-command 'arecord -D $MIC_DEVICE -r $MIC_RATE -c 1 -f S16_LE -t raw --buffer-size=4096' \\
     --snd-command 'aplay -D $SPEAKER_DEVICE -r $SPEAKER_RATE -c 1 -f S16_LE -t raw' \\
     --wake-uri '$WAKE_URI' \\
     --wake-word-name '$WAKE_WORD'"
