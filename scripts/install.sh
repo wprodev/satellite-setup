@@ -1,6 +1,6 @@
 #!/bin/bash
 # Wyoming Satellite Dependencies Installer
-# Run with: bash satellite-install.sh
+# Run with: bash install.sh
 
 set -e
 
@@ -26,6 +26,7 @@ sudo apt-get install -y \
     python3-dev \
     python3-venv \
     python3-pip \
+    alsa-utils \
     git \
     alsa-utils \
     libatlas-base-dev \
@@ -40,14 +41,25 @@ mkdir -p "$USER_HOME/wyoming-configs"
 mkdir -p "$USER_HOME/sounds"
 mkdir -p "$USER_HOME/.wyoming-satellite"
 
+rm -rf "$USER_HOME/satellite-setup"
+mkdir -p "$USER_HOME/satellite-setup"
+git clone https://github.com/wprodev/satellite-setup.git "$USER_HOME/satellite-setup"
+rm -rf "$USER_HOME/satellite-setup/.git"
+
 # Setup Wyoming Satellite
 echo "Setting up Wyoming Satellite..."
+rm -rf "$USER_HOME/wyoming-satellite"
+mkdir -p "$USER_HOME/wyoming-satellite"
+cp -R "$USER_HOME/satellite-setup/wyoming-satellite" "$USER_HOME/wyoming-satellite"
 cd "$USER_HOME/wyoming-satellite"
 echo "Running Wyoming Satellite setup script..."
 script/setup
 
 # Setup Wyoming OpenWakeWord
 echo "Setting up Wyoming OpenWakeWord..."
+rm -rf "$USER_HOME/wyoming-openwakeword"
+mkdir -p "$USER_HOME/wyoming-openwakeword"
+cp -R "$USER_HOME/satellite-setup/wyoming-openwakeword" "$USER_HOME/wyoming-openwakeword"
 cd "$USER_HOME/wyoming-openwakeword"
 echo "Running Wyoming OpenWakeWord setup script..."
 script/setup
