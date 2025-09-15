@@ -9,7 +9,7 @@ CURRENT_USER=$(whoami)
 USER_HOME=$(eval echo "~$CURRENT_USER")
 
 echo "==========================================="
-echo "Wyoming Satellite Dependencies Installer"
+echo "Wyoming Satellite Installer"
 echo "==========================================="
 echo "Current User: $CURRENT_USER"
 echo "User Home: $USER_HOME"
