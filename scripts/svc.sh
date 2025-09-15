@@ -232,6 +232,10 @@ if [ "$DEBUG_MODE" = "true" ]; then
     --debug"
 fi
 
+# Add VAD (Voice Activity Detection)
+SATELLITE_CMD="$SATELLITE_CMD \\
+    --vad"
+
 echo "Creating systemd services..."
 
 # Create OpenWakeWord service with unique name

@@ -55,6 +55,10 @@ cd "$USER_HOME/wyoming-satellite"
 echo "Running Wyoming Satellite setup script..."
 script/setup
 
+# Install VAD dependencies for Wyoming Satellite
+echo "Installing VAD (Voice Activity Detection) dependencies..."
+.venv/bin/pip3 install 'pysilero-vad==1.0.0'
+
 # Setup Wyoming OpenWakeWord
 echo "Setting up Wyoming OpenWakeWord..."
 rm -rf "$USER_HOME/wyoming-openwakeword"
